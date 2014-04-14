@@ -29,6 +29,28 @@
 list_element *switches;
 int send_uds_flow(uint64_t datapath_id, char* request_data,int len);
 int set_oxm_matches_from_json(oxm_matches* match,char* request_data);
+uint64_t dpid_from_string(char* input);
+
+
+/********************************
+ * convert dpif (string form) to int
+ * ex: 00:33:44:55:22:55 -> 220189762133
+ *
+ *******************************/
+
+uint64_t dpid_from_string(char* input){
+    char *buf;
+    uint64_t num = 0;
+    buf = strtok(input,":");
+    while(buf!=NULL){
+        int a = strtol(buf,NULL,16);
+        num = (num<<8) + a;
+        buf = strtok(NULL,":");
+    }
+	return num;
+}
+
+
 
 
 
@@ -373,12 +395,13 @@ handle_query_add_uds( const struct mg_request_info *request_info, void *request_
   char dpid[30];
   memset(dpid,0,sizeof(dpid));
   memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
-  printf("dpid = %s\n",dpid);
+  send_uds_flow(dpid_from_string(dpid),request_data,len);
   return "It is from test rest api...";
 }
 
 static char *
 handle_query_add_uds_all( const struct mg_request_info *request_info, void *request_data,int len ) {
+  UNUSED(request_info);
   int err;
   const list_element *element;
   for ( element = switches; element != NULL; element = element->next ) {
@@ -395,54 +418,79 @@ handle_query_add_uds_all( const struct mg_request_info *request_info, void *requ
 
 
 int send_uds_flow(uint64_t datapath_id, char* request_data,int len){
-    
-  openflow_instructions *insts = create_instructions();
-  append_instructions_goto_table(insts,1);
+	int err = 0;
+	UNUSED(len);   
+	openflow_instructions *insts = create_instructions();
+	append_instructions_goto_table(insts,1);
 
-  oxm_matches *match = create_oxm_matches();
-  set_oxm_matches_from_json(match,request_data);
+	oxm_matches *match = create_oxm_matches();
+	err = set_oxm_matches_from_json(match,request_data);
+	if(-1 == err){
+		goto error;
+	}
   
-  buffer *flow_mod = create_flow_mod(
-    get_transaction_id(),
-    get_cookie(),
-    0,
-    0,  //table id
-    OFPFC_ADD,
-    0,
-    0,
-    OFP_HIGH_PRIORITY,
-    0, 
-    0,
-    0,
-    OFPFF_SEND_FLOW_REM,
-    match,
-    insts
-  );
-  send_openflow_message( datapath_id, flow_mod );
-  free_buffer( flow_mod );
-  delete_oxm_matches( match );
-  delete_instructions( insts );
+	buffer *flow_mod = create_flow_mod(
+		get_transaction_id(),
+		get_cookie(),
+		0,
+		0,  //table id
+		OFPFC_ADD,
+		0,
+		0,
+		OFP_HIGH_PRIORITY,
+		0, 
+		0,
+		0,
+		OFPFF_SEND_FLOW_REM,
+		match,
+		insts
+		);
+	send_openflow_message( datapath_id, flow_mod );
+
+	free_buffer( flow_mod );
+
+error:
+	delete_oxm_matches( match );
+	delete_instructions( insts );
+	return err;
 }
 
 int set_oxm_matches_from_json(oxm_matches* oxm_match,char* request_data){
 	int err = 0;
-	int i =0;
 	json_object *new_obj,*match;
-	json_object *src_mac;
-	char srcmac[6],src_mac_mask[6];
+	json_object *data1,*data2;
+	char eth_mac[OFP_ETH_ALEN],eth_mac_mask[OFP_ETH_ALEN];
     new_obj = json_tokener_parse(request_data);
 	if(!json_object_object_get_ex(new_obj,"match",&match)){
 		printf("parse match filed  error %s\n",json_object_get_string(new_obj));
   		err = -1;
 		goto error;
 	}
-    if(json_object_object_get_ex(match,"eth_src",&src_mac)){
-		sscanf(json_object_get_string(src_mac), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &srcmac[0], &srcmac[1], &srcmac[2], &srcmac[3], &srcmac[4], &srcmac[5]);
-		memset(src_mac_mask,255,sizeof(src_mac_mask));
-		for(i=0;i<6;i++)
-			printf("%d\n",srcmac[i]);
-		append_oxm_match_eth_src(oxm_match,srcmac,src_mac_mask);
-		json_object_put(src_mac);
+    if(json_object_object_get_ex(match,"eth_src",&data1)){
+		sscanf(json_object_get_string(data1), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &eth_mac[0], &eth_mac[1], &eth_mac[2], &eth_mac[3], &eth_mac[4], &eth_mac[5]);
+		json_object_put(data1);
+		//Get eth_mac_mask
+		if(json_object_object_get_ex(match,"eth_src_mask",&data2)){
+			sscanf(json_object_get_string(data2), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &eth_mac_mask[0], &eth_mac_mask[1], &eth_mac_mask[2], &eth_mac_mask[3], &eth_mac_mask[4], &eth_mac_mask[5]);
+			json_object_put(data2);
+		}	
+		else{
+			memset(eth_mac_mask,255,sizeof(eth_mac_mask));
+		}
+		append_oxm_match_eth_src(oxm_match,(uint8_t*)eth_mac,(uint8_t*)eth_mac_mask);
+	}
+    if(json_object_object_get_ex(match,"eth_dst",&data1)){
+		sscanf(json_object_get_string(data1), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &eth_mac[0], &eth_mac[1], &eth_mac[2], &eth_mac[3], &eth_mac[4], &eth_mac[5]);
+		json_object_put(data1);
+		//Get eth_mac_mask
+		if(json_object_object_get_ex(match,"eth_dst_mask",&data2)){
+			sscanf(json_object_get_string(data2), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &eth_mac_mask[0], &eth_mac_mask[1], &eth_mac_mask[2], &eth_mac_mask[3], &eth_mac_mask[4], &eth_mac_mask[5]);
+			json_object_put(data2);
+		}	
+		else{
+			memset(eth_mac_mask,255,sizeof(eth_mac_mask));
+		}
+		append_oxm_match_eth_dst(oxm_match,(uint8_t*)eth_mac,(uint8_t*)eth_mac_mask);
 	}
 
 error:
