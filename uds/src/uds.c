@@ -27,9 +27,14 @@
 
 
 list_element *switches;
-int send_uds_flow(uint64_t datapath_id, char* request_data,int len);
 int set_oxm_matches_from_json(oxm_matches* match,char* request_data);
+int send_uds_flow(uint64_t datapath_id, char* request_data,int len);
+int delete_uds_flow(uint64_t datapath_id, char* request_data,int len);
 uint64_t dpid_from_string(char* input);
+char* dpid_from_uint64(uint64_t input);
+void handle_multipart_reply_flow(uint64_t datapath_id,  struct ofp_flow_stats *data,   uint16_t body_length);
+void add_int_to_json(const char*name,int input,json_object* obj);
+void add_uint64_to_json(const char* name,uint64_t  input, json_object* obj);
 
 
 /********************************
@@ -50,6 +55,23 @@ uint64_t dpid_from_string(char* input){
 	return num;
 }
 
+char* dpid_from_uint64(uint64_t input){
+	char ans[24];
+	uint64_t mask,tmp;
+    int i=0,j;
+    mask = 0xffff000000000000;
+    for(i=0;i<8;i++){
+        tmp = (input & mask) >> ((7-i)*8);
+        mask = mask >> 8;
+        j = tmp/16;
+        ans[i*3] = j > 10? j+'a' : j+'0';
+        j = tmp%16;
+        ans[i*3+1] = j > 10? j+'a' : j+'0';
+        ans[i*3+2] = ':';
+    }
+    ans[23]=0;
+	return ans;
+}
 
 
 
@@ -389,31 +411,221 @@ handle_switch_ready( uint64_t datapath_id, void *user_data ) {
  *
  *********************************************/
 
-/*** Define your REST API callback function here ***/
+
+/*
+ *  Add Uds
+ *
+ */
+
 static char *
 handle_query_add_uds( const struct mg_request_info *request_info, void *request_data, int len ) {
-  char dpid[30];
-  memset(dpid,0,sizeof(dpid));
-  memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
-  send_uds_flow(dpid_from_string(dpid),request_data,len);
-  return "It is from test rest api...";
+	char dpid[30];
+	memset(dpid,0,sizeof(dpid));
+	memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
+	send_uds_flow(dpid_from_string(dpid),request_data,len);
+	return "OK";
 }
 
 static char *
 handle_query_add_uds_all( const struct mg_request_info *request_info, void *request_data,int len ) {
-  UNUSED(request_info);
-  int err;
-  const list_element *element;
-  for ( element = switches; element != NULL; element = element->next ) {
-      err = send_uds_flow( *(uint64_t*)element->data,request_data,len);
-	  switch(err){
-		case -1:
-			return "json format error\n";
-		case 0:
-			break;
-	  }
-  }
-  return "send uds flow\n";
+	UNUSED(request_info);
+	int err;
+	const list_element *element;
+	for ( element = switches; element != NULL; element = element->next ) {
+		err = send_uds_flow( *(uint64_t*)element->data,request_data,len);
+		switch(err){
+			case -1:
+				return "json format error\n";
+			case 0:
+				break;
+		}
+	}
+	return "OK";
+}
+
+/*
+ *  Del UDS
+ *
+ */
+
+static char *
+handle_query_del_uds( const struct mg_request_info *request_info, void *request_data, int len ) {
+	char dpid[30];
+	memset(dpid,0,sizeof(dpid));
+	memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
+	delete_uds_flow(dpid_from_string(dpid),request_data,len);
+	return "OK";
+}
+
+
+static char *
+handle_query_del_uds_all( const struct mg_request_info *request_info, void *request_data, int len ) {
+	UNUSED(request_info);
+	int err;
+	const list_element *element;
+	for ( element = switches; element != NULL; element = element->next ) {
+		err = delete_uds_flow( *(uint64_t*)element->data,request_data,len);
+		switch(err){
+			case -1:
+				return "json format error\n";
+			case 0:
+				break;
+		}
+	}
+	return "OK";
+}
+
+
+
+/*
+ *  Get UDS
+ *
+ */
+
+static char *
+handle_query_get_uds( const struct mg_request_info *request_info, void *request_data, int len ) {
+	char dpid[30];
+	memset(dpid,0,sizeof(dpid));
+	memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
+	get_uds_flow(dpid_from_string(dpid),request_data,len);
+	return "OK";
+}
+
+
+static char *
+handle_query_get_uds_all( const struct mg_request_info *request_info, void *request_data, int len ) {
+	UNUSED(request_info);
+	int err;
+	const list_element *element;
+	for ( element = switches; element != NULL; element = element->next ) {
+		err = get_uds_flow( *(uint64_t*)element->data,request_data,len);
+		switch(err){
+			case -1:
+				return "json format error\n";
+			case 0:
+				break;
+		}
+	}
+	return "OK";
+}
+
+/*
+ *
+ * Handle Multipart reply
+ *
+ */
+
+void
+handle_multipart_reply(  uint64_t datapath_id,   uint32_t transaction_id,   uint16_t type,   uint16_t flags,   const buffer *data,   void *user_data ) {
+	buffer *body = NULL;
+	void *multipart_data = NULL;
+	uint16_t body_length = 0;
+	UNUSED( user_data );
+
+	/*printf( "[multipart_reply]" );
+	printf( " datapath_id: %#" PRIx64, datapath_id );
+	printf( " transaction_id: %#x", transaction_id );
+	printf( " type: %#x", type );
+	printf( " flags: %#x", flags );
+*/
+	if ( NULL != data) {
+		body = duplicate_buffer( data );
+		multipart_data = body->data;
+		body_length = ( uint16_t ) body->length;
+	}
+	if ( NULL != body){
+		switch(type){
+			case OFPMP_FLOW:
+				handle_multipart_reply_flow( datapath_id,(struct ofp_flow_stats *) multipart_data, body_length );
+				break;
+		}
+	}
+}
+
+
+void
+handle_multipart_reply_flow(uint64_t datapath_id,  struct ofp_flow_stats *data,   uint16_t body_length){
+	struct ofp_flow_stats *stats = data;
+	uint16_t rest_length = body_length;
+	uint16_t match_len = 0;
+	uint16_t match_pad_len = 0;
+	uint16_t inst_len = 0;
+	struct ofp_instruction *inst;
+	int i = 0;
+	char inst_str[ 4096 ];
+	struct ofp_match *tmp_match;
+	oxm_matches *tmp_matches;
+	char match_str[ MATCH_STRING_LENGTH ];
+
+	//json
+	json_object* response = json_object_new_object();
+	json_object* datapath = json_object_new_string(dpid_from_uint64(datapath_id));
+	json_object* flows = json_object_new_array();
+	json_object_object_add(response,"datapath",datapath);
+	add_uint64_to_json("datapath",datapath_id,response);
+	
+	while ( rest_length >= sizeof( struct ofp_flow_stats ) ) {
+		json_object* flow = json_object_new_object();
+		struct ofp_flow_stats *next;
+		next = ( struct ofp_flow_stats * ) ( ( char * ) stats + stats->length );
+
+		i++;
+/*
+		printf( "[multipart_reply_flow:%d]", i );
+		printf( " length: %#x", stats->length );
+		printf( " table_id: %#x", stats->table_id );
+		printf( " duration_sec: %#x", stats->duration_sec );
+		printf( " duration_nsec: %#x", stats->duration_nsec );
+		printf( " priority: %#x", stats->priority );
+		printf( " idle_timeout: %#x", stats->idle_timeout );
+		printf( " hard_timeout: %#x", stats->hard_timeout );
+		printf( " flags: %#x", stats->flags );
+		printf( " cookie: %#" PRIx64, stats->cookie );
+		printf( " packet_count: %#" PRIx64, stats->packet_count );
+		printf( " byte_count: %#" PRIx64, stats->byte_count );
+*/
+		add_uint64_to_json("packet_count",stats->packet_count,flow);
+		add_uint64_to_json("byte_count",stats->byte_count,flow);
+		match_len = stats->match.length;
+		match_pad_len = ( uint16_t ) ( match_len + PADLEN_TO_64( match_len ) );
+		{
+			tmp_match = xcalloc( 1, match_pad_len );
+			hton_match( tmp_match, &stats->match );
+			tmp_matches = parse_ofp_match( tmp_match );
+			match_to_string( tmp_matches, match_str, sizeof( match_str ) );
+			xfree( tmp_match );
+			delete_oxm_matches( tmp_matches );
+		}
+		printf( " match: [%s]", match_str );
+		if ( stats->length > ( offsetof( struct ofp_flow_stats, match ) + match_pad_len ) ) {
+			inst_len = ( uint16_t ) ( stats->length - ( offsetof( struct ofp_flow_stats, match ) + match_pad_len ) );
+			inst = ( struct ofp_instruction * ) ( ( char * ) stats + offsetof( struct ofp_flow_stats, match ) + match_pad_len );
+			instructions_to_string( inst, inst_len, inst_str, sizeof( inst_str ) );
+		//	printf( " instructions: [%s]", inst_str );
+		}
+		//printf("\n");
+		rest_length = ( uint16_t ) ( rest_length - stats->length );
+		stats = next;
+		json_object_array_add(flows,flow);
+	}
+	json_object_object_add(response,"flows",flows);
+	printf ("The json object created: %s\n",json_object_to_json_string(response));
+	fflush(stdout);
+}
+/*
+ *  Mooooo
+ *
+ */
+
+void add_int_to_json(const char*name,int input,json_object* obj){
+    json_object* tmp = json_object_new_int(input);
+    json_object_object_add(obj,name,tmp);
+}
+void add_uint64_to_json(const char* name,uint64_t  input, json_object* obj){
+    char tmp[20];
+    sprintf(tmp,"%" PRIu64,input);
+    json_object* tmp_obj = json_object_new_string(tmp);
+    json_object_object_add(obj,name,tmp_obj);
 }
 
 
@@ -428,10 +640,9 @@ int send_uds_flow(uint64_t datapath_id, char* request_data,int len){
 	if(-1 == err){
 		goto error;
 	}
-  
 	buffer *flow_mod = create_flow_mod(
 		get_transaction_id(),
-		get_cookie(),
+		1,
 		0,
 		0,  //table id
 		OFPFC_ADD,
@@ -446,14 +657,73 @@ int send_uds_flow(uint64_t datapath_id, char* request_data,int len){
 		insts
 		);
 	send_openflow_message( datapath_id, flow_mod );
-
 	free_buffer( flow_mod );
-
 error:
 	delete_oxm_matches( match );
 	delete_instructions( insts );
 	return err;
 }
+
+
+int delete_uds_flow(uint64_t datapath_id, char* request_data,int len){
+	int err = 0;
+	UNUSED(len);   
+	openflow_instructions *insts = create_instructions();
+	append_instructions_goto_table(insts,1);
+	oxm_matches *match = create_oxm_matches();
+	err = set_oxm_matches_from_json(match,request_data);
+	if(-1 == err){
+		goto error;
+	}
+	buffer *flow_mod = create_flow_mod(
+		get_transaction_id(),
+		1,
+		0,
+		0,  //table id
+		OFPFC_DELETE,
+		0,
+		0,
+		OFP_HIGH_PRIORITY,
+		OFP_NO_BUFFER, 
+		OFPP_ANY,
+		OFPG_ANY,
+		0,
+		match,
+		NULL
+	);
+	send_openflow_message( datapath_id, flow_mod );
+	free_buffer( flow_mod );
+error:
+	delete_oxm_matches( match );
+	delete_instructions( insts );
+	return err;
+}
+
+
+int get_uds_flow(uint64_t datapath_id, char* request_data,int len){
+	int err = 0;
+	UNUSED(len);
+	oxm_matches *match = create_oxm_matches();
+	err =  set_oxm_matches_from_json(match,request_data);
+	if( -1 == err){
+		goto error;
+	}
+	buffer* flow_multipart = create_flow_multipart_request(
+			get_transaction_id(),
+			0, // flags
+			0, // table id
+			OFPP_ANY,// out_port
+			OFPG_ANY, // out_group
+			1, // cookie
+			0, // cookie mask
+			match);
+	send_openflow_message(datapath_id,flow_multipart);
+	free_buffer(flow_multipart);
+error:
+	delete_oxm_matches(match);
+	return err;
+}
+
 
 int set_oxm_matches_from_json(oxm_matches* oxm_match,char* request_data){
 	int err = 0;
@@ -517,6 +787,11 @@ main( int argc, char *argv[] ) {
   /*** Add your REST API ***/
   add_restapi_url( "^/uds/add/all$", "PUT", handle_query_add_uds_all );
   add_restapi_url( "^/uds/add/", "PUT", handle_query_add_uds );
+  add_restapi_url( "^/uds/del/all$", "PUT", handle_query_del_uds_all );
+  add_restapi_url( "^/uds/del/", "PUT", handle_query_del_uds );
+  add_restapi_url( "^/uds/get/all$", "PUT", handle_query_get_uds_all );
+  add_restapi_url( "^/uds/get/", "PUT", handle_query_get_uds );
+  set_multipart_reply_handler( handle_multipart_reply, NULL );
   /*************************/
   
   /* Set switch ready handler  (learning switch)*/

@@ -80,7 +80,7 @@ static int *mongoose_callback( struct mg_connection *conn )
     //int content_length = snprintf(content, sizeof(content),
     //                              "Hello from mongoose! Remote port: %d, content:%s\n",
     //                              request_info->remote_port, ret_strings );
-    if(0 = strcmp(ret_strings,"OK")){
+    if(0 == strcmp(ret_strings,"OK")){
 	    mg_printf(conn,
     	          "HTTP/1.1 200 OK\r\n"
         	      "Content-Type: text/plain\r\n"
