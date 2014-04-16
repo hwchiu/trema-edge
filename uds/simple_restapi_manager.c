@@ -46,7 +46,7 @@ static int *mongoose_callback( struct mg_connection *conn )
   const struct mg_request_info *request_info = mg_get_request_info(conn); 
     char *ret_strings = "";
     char data[4096];
-    int n,i;
+    int n,retcode;
     memset(data,0,sizeof(data));
     n = mg_read(conn,data,sizeof(data));
     /* Iterate all the url_mapping data */
@@ -66,7 +66,7 @@ static int *mongoose_callback( struct mg_connection *conn )
         if( strcmp( request_info->request_method , 
                 url_mapping_data->method ) == 0 ) { 
           /* Match the REST API */
-          ret_strings = ( *url_mapping_data->restapi_requested_callback )( request_info, &data,n );
+          ret_strings = ( *url_mapping_data->restapi_requested_callback )( request_info, &data,&retcode );
         }
         else {
           info( "REST API not found \n" );
@@ -80,7 +80,8 @@ static int *mongoose_callback( struct mg_connection *conn )
     //int content_length = snprintf(content, sizeof(content),
     //                              "Hello from mongoose! Remote port: %d, content:%s\n",
     //                              request_info->remote_port, ret_strings );
-    if(0 == strcmp(ret_strings,"OK")){
+	//
+    if(200 == retcode){
 	    mg_printf(conn,
     	          "HTTP/1.1 200 OK\r\n"
         	      "Content-Type: text/plain\r\n"
@@ -89,7 +90,7 @@ static int *mongoose_callback( struct mg_connection *conn )
     	          "%s",
         	      strlen(ret_strings), ret_strings);
 	}
-	else{
+	else if (404 == retcode){
 	    mg_printf(conn,
     	          "HTTP/1.1 404 Not Found\r\n"
         	      "Content-Type: text/plain\r\n"
