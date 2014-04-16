@@ -28,7 +28,7 @@ extern "C" {
 #include "mongoose.h"
 
 /* define REST API Callback Function Pointer */
-typedef char* ( *restapi_callback_func )( const struct mg_request_info *request_info, void *request_data ,int *retcode);
+typedef char* ( *restapi_callback_func )( const struct mg_request_info *request_info, void *request_data ,void* retcode);
 
 bool start_restapi_manager();
 bool add_restapi_url( const char *url_str, const char *method, restapi_callback_func restapi_callback );

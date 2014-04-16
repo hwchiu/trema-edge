@@ -35,7 +35,7 @@ typedef struct url_mapping {
     char url_pattern_key[URL_PATTERN_LEN];
     char method[METHOD_LEN];
     regex_t regex;
-    char* ( *restapi_requested_callback )( const struct mg_request_info *request_info, void *request_data ,int *retcode);
+    char* ( *restapi_requested_callback )( const struct mg_request_info *request_info, void *request_data ,void *retcode);
 } url_mapping;
 
 typedef struct {

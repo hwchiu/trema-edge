@@ -20,16 +20,20 @@
 
 #include <assert.h>
 #include <inttypes.h>
+#include <signal.h>
+#include <errno.h>
 #include "trema.h"
 #include "simple_restapi_manager.h"
 #include "json.h"
 
-
-
+int isdone=false;
 list_element *switches;
+json_object* response = NULL;
+int uds_count,uds_current_count=0;
 int set_oxm_matches_from_json(oxm_matches* match,char* request_data);
-int send_uds_flow(uint64_t datapath_id, char* request_data,int len);
-int delete_uds_flow(uint64_t datapath_id, char* request_data,int len);
+int send_uds_flow(uint64_t datapath_id, char* request_data);
+int delete_uds_flow(uint64_t datapath_id, char* request_data);
+int get_uds_flow(uint64_t datapath_id, char* request_data);
 uint64_t dpid_from_string(char* input);
 char* dpid_from_uint64(uint64_t input);
 void handle_multipart_reply_flow(uint64_t datapath_id,  struct ofp_flow_stats *data,   uint16_t body_length);
@@ -369,6 +373,7 @@ static void
 handle_switch_ready( uint64_t datapath_id, void *user_data ) {
   UNUSED( user_data );
   info( "%#" PRIx64 " is connected.", datapath_id );
+  uds_current_count+=1;
   //add datapath
   list_element **switches = user_data;
   insert_datapath_id( switches, datapath_id );
@@ -418,21 +423,22 @@ handle_switch_ready( uint64_t datapath_id, void *user_data ) {
  */
 
 static char *
-handle_query_add_uds( const struct mg_request_info *request_info, void *request_data, int len ) {
+handle_query_add_uds( const struct mg_request_info *request_info, void *request_data, void *retcode ) {
 	char dpid[30];
 	memset(dpid,0,sizeof(dpid));
 	memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
-	send_uds_flow(dpid_from_string(dpid),request_data,len);
+	send_uds_flow(dpid_from_string(dpid),request_data);
+	(*(int*)retcode)=200;
 	return "OK";
 }
 
 static char *
-handle_query_add_uds_all( const struct mg_request_info *request_info, void *request_data,int len ) {
+handle_query_add_uds_all( const struct mg_request_info *request_info, void *request_data,void *retcode) {
 	UNUSED(request_info);
 	int err;
 	const list_element *element;
 	for ( element = switches; element != NULL; element = element->next ) {
-		err = send_uds_flow( *(uint64_t*)element->data,request_data,len);
+		err = send_uds_flow( *(uint64_t*)element->data,request_data);
 		switch(err){
 			case -1:
 				return "json format error\n";
@@ -440,6 +446,7 @@ handle_query_add_uds_all( const struct mg_request_info *request_info, void *requ
 				break;
 		}
 	}
+	*((int*)retcode)=200;
 	return "OK";
 }
 
@@ -449,22 +456,23 @@ handle_query_add_uds_all( const struct mg_request_info *request_info, void *requ
  */
 
 static char *
-handle_query_del_uds( const struct mg_request_info *request_info, void *request_data, int len ) {
+handle_query_del_uds( const struct mg_request_info *request_info, void *request_data, void *retcode) {
 	char dpid[30];
 	memset(dpid,0,sizeof(dpid));
 	memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
-	delete_uds_flow(dpid_from_string(dpid),request_data,len);
+	delete_uds_flow(dpid_from_string(dpid),request_data);
+	*((int*)retcode)=200;
 	return "OK";
 }
 
 
 static char *
-handle_query_del_uds_all( const struct mg_request_info *request_info, void *request_data, int len ) {
+handle_query_del_uds_all( const struct mg_request_info *request_info, void *request_data, void* retcode ) {
 	UNUSED(request_info);
 	int err;
 	const list_element *element;
 	for ( element = switches; element != NULL; element = element->next ) {
-		err = delete_uds_flow( *(uint64_t*)element->data,request_data,len);
+		err = delete_uds_flow( *(uint64_t*)element->data,request_data);
 		switch(err){
 			case -1:
 				return "json format error\n";
@@ -472,6 +480,7 @@ handle_query_del_uds_all( const struct mg_request_info *request_info, void *requ
 				break;
 		}
 	}
+	*((int*)retcode)=200;
 	return "OK";
 }
 
@@ -483,22 +492,43 @@ handle_query_del_uds_all( const struct mg_request_info *request_info, void *requ
  */
 
 static char *
-handle_query_get_uds( const struct mg_request_info *request_info, void *request_data, int len ) {
+handle_query_get_uds( const struct mg_request_info *request_info, void *request_data, void *retcode ) {
+	int i;
 	char dpid[30];
 	memset(dpid,0,sizeof(dpid));
 	memcpy(dpid,&request_info->uri[9],strlen(request_info->uri)-8);
-	get_uds_flow(dpid_from_string(dpid),request_data,len);
-	return "OK";
+	uds_count = 1;
+	if( NULL != response){
+		json_object_put(response);
+		response = NULL;
+	}
+	isdone = false;
+	get_uds_flow(dpid_from_string(dpid),request_data);
+	for(i=0;i<10;i++){
+		if(isdone){
+			*((int*)retcode)=200;
+			return json_object_to_json_string(response);
+		}
+		sleep(1);
+	}
+	*((int*)retcode)=404;
+	return "timeout";
 }
 
 
 static char *
-handle_query_get_uds_all( const struct mg_request_info *request_info, void *request_data, int len ) {
+handle_query_get_uds_all( const struct mg_request_info *request_info, void *request_data, void *retcode ) {
 	UNUSED(request_info);
-	int err;
+	int err,i=0;
 	const list_element *element;
+	uds_count = uds_current_count ;
+	if( NULL != response){
+		json_object_put(response);
+		response = NULL;
+	}
+	isdone = false;
 	for ( element = switches; element != NULL; element = element->next ) {
-		err = get_uds_flow( *(uint64_t*)element->data,request_data,len);
+		err = get_uds_flow( *(uint64_t*)element->data,request_data);
 		switch(err){
 			case -1:
 				return "json format error\n";
@@ -506,7 +536,16 @@ handle_query_get_uds_all( const struct mg_request_info *request_info, void *requ
 				break;
 		}
 	}
-	return "OK";
+	for(i=0;i<10;i++){
+		if(isdone){
+			*((int*)retcode)=200;
+			return json_object_to_json_string(response);
+		}
+		sleep(1);
+	}
+	*((int*)retcode)=404;
+	return "timeout";
+
 }
 
 /*
@@ -521,18 +560,27 @@ handle_multipart_reply(  uint64_t datapath_id,   uint32_t transaction_id,   uint
 	void *multipart_data = NULL;
 	uint16_t body_length = 0;
 	UNUSED( user_data );
-
-	/*printf( "[multipart_reply]" );
+/*
+	printf( "[multipart_reply]" );
 	printf( " datapath_id: %#" PRIx64, datapath_id );
 	printf( " transaction_id: %#x", transaction_id );
 	printf( " type: %#x", type );
 	printf( " flags: %#x", flags );
+	fflush(stdout);
 */
+
 	if ( NULL != data) {
 		body = duplicate_buffer( data );
 		multipart_data = body->data;
 		body_length = ( uint16_t ) body->length;
+	}else{
+		if( OFPMP_FLOW == type){
+			if( 0 == --uds_count){
+				isdone = true;
+			}
+		}
 	}
+
 	if ( NULL != body){
 		switch(type){
 			case OFPMP_FLOW:
@@ -556,14 +604,15 @@ handle_multipart_reply_flow(uint64_t datapath_id,  struct ofp_flow_stats *data, 
 	struct ofp_match *tmp_match;
 	oxm_matches *tmp_matches;
 	char match_str[ MATCH_STRING_LENGTH ];
-
 	//json
-	json_object* response = json_object_new_object();
+	if(NULL == response){
+		response = json_object_new_array();
+	}
 	json_object* datapath = json_object_new_string(dpid_from_uint64(datapath_id));
+	json_object* data_flow = json_object_new_object();
 	json_object* flows = json_object_new_array();
-	json_object_object_add(response,"datapath",datapath);
-	add_uint64_to_json("datapath",datapath_id,response);
-	
+	json_object_object_add(data_flow,"datapath",datapath);
+	add_uint64_to_json("datapath",datapath_id,data_flow);
 	while ( rest_length >= sizeof( struct ofp_flow_stats ) ) {
 		json_object* flow = json_object_new_object();
 		struct ofp_flow_stats *next;
@@ -601,16 +650,18 @@ handle_multipart_reply_flow(uint64_t datapath_id,  struct ofp_flow_stats *data, 
 			inst_len = ( uint16_t ) ( stats->length - ( offsetof( struct ofp_flow_stats, match ) + match_pad_len ) );
 			inst = ( struct ofp_instruction * ) ( ( char * ) stats + offsetof( struct ofp_flow_stats, match ) + match_pad_len );
 			instructions_to_string( inst, inst_len, inst_str, sizeof( inst_str ) );
-		//	printf( " instructions: [%s]", inst_str );
 		}
-		//printf("\n");
 		rest_length = ( uint16_t ) ( rest_length - stats->length );
 		stats = next;
 		json_object_array_add(flows,flow);
 	}
-	json_object_object_add(response,"flows",flows);
-	printf ("The json object created: %s\n",json_object_to_json_string(response));
+	json_object_object_add(data_flow,"flows",flows);
+	json_object_array_add(response,data_flow);
+	//printf ("The json object created: %s\n count = %d\n",json_object_to_json_string(response),uds_count);
 	fflush(stdout);
+	if( 0 == --uds_count){
+		isdone = true;
+	}
 }
 /*
  *  Mooooo
@@ -629,9 +680,8 @@ void add_uint64_to_json(const char* name,uint64_t  input, json_object* obj){
 }
 
 
-int send_uds_flow(uint64_t datapath_id, char* request_data,int len){
+int send_uds_flow(uint64_t datapath_id, char* request_data){
 	int err = 0;
-	UNUSED(len);   
 	openflow_instructions *insts = create_instructions();
 	append_instructions_goto_table(insts,1);
 
@@ -665,9 +715,8 @@ error:
 }
 
 
-int delete_uds_flow(uint64_t datapath_id, char* request_data,int len){
+int delete_uds_flow(uint64_t datapath_id, char* request_data){
 	int err = 0;
-	UNUSED(len);   
 	openflow_instructions *insts = create_instructions();
 	append_instructions_goto_table(insts,1);
 	oxm_matches *match = create_oxm_matches();
@@ -700,14 +749,9 @@ error:
 }
 
 
-int get_uds_flow(uint64_t datapath_id, char* request_data,int len){
-	int err = 0;
-	UNUSED(len);
+int get_uds_flow(uint64_t datapath_id, char* request_data){
 	oxm_matches *match = create_oxm_matches();
-	err =  set_oxm_matches_from_json(match,request_data);
-	if( -1 == err){
-		goto error;
-	}
+	//set_oxm_matches_from_json(match,request_data);
 	buffer* flow_multipart = create_flow_multipart_request(
 			get_transaction_id(),
 			0, // flags
@@ -719,9 +763,8 @@ int get_uds_flow(uint64_t datapath_id, char* request_data,int len){
 			match);
 	send_openflow_message(datapath_id,flow_multipart);
 	free_buffer(flow_multipart);
-error:
 	delete_oxm_matches(match);
-	return err;
+	return 0;
 }
 
 
@@ -773,40 +816,42 @@ error:
 
 int
 main( int argc, char *argv[] ) {
-  
-  /* Initialize the Trema world */
-  init_trema( &argc, &argv );
-  
-  create_switches( &switches );
-  /* Init restapi manager */
-  init_restapi_manager();
-  
-  /* Start restapi manager */
-  start_restapi_manager();
-  
-  /*** Add your REST API ***/
-  add_restapi_url( "^/uds/add/all$", "PUT", handle_query_add_uds_all );
-  add_restapi_url( "^/uds/add/", "PUT", handle_query_add_uds );
-  add_restapi_url( "^/uds/del/all$", "PUT", handle_query_del_uds_all );
-  add_restapi_url( "^/uds/del/", "PUT", handle_query_del_uds );
-  add_restapi_url( "^/uds/get/all$", "PUT", handle_query_get_uds_all );
-  add_restapi_url( "^/uds/get/", "PUT", handle_query_get_uds );
-  set_multipart_reply_handler( handle_multipart_reply, NULL );
-  /*************************/
-  
-  /* Set switch ready handler  (learning switch)*/
-  hash_table *forwarding_db = create_hash( compare_forwarding_entry, hash_forwarding_entry );
-  add_periodic_event_callback( AGING_INTERVAL, update_forwarding_db, forwarding_db );
-  set_packet_in_handler( handle_packet_in, forwarding_db );
-  set_switch_ready_handler( handle_switch_ready, &switches );
 
-  /* Main loop */
-  start_trema();
+	/* Initialize the Trema world */
+	init_trema( &argc, &argv );
 
-  /* Finalize transaction manager */
-  finalize_restapi_manager();
+	create_switches( &switches );
+	/* Init restapi manager */
+	init_restapi_manager();
 
-  return 0;
+	/* Start restapi manager */
+	start_restapi_manager();
+
+	/*** Add your REST API ***/
+	add_restapi_url( "^/uds/addall$", "PUT", handle_query_add_uds_all );
+	add_restapi_url( "^/uds/add/", "PUT", handle_query_add_uds );
+	add_restapi_url( "^/uds/delall$", "PUT", handle_query_del_uds_all );
+	add_restapi_url( "^/uds/del/", "PUT", handle_query_del_uds );
+	add_restapi_url( "^/uds/getall$", "GET", handle_query_get_uds_all );
+	add_restapi_url( "^/uds/get", "GET", handle_query_get_uds );
+	set_multipart_reply_handler( handle_multipart_reply, NULL );
+	/*************************/
+
+	/* Set switch ready handler  (learning switch)*/
+	hash_table *forwarding_db = create_hash( compare_forwarding_entry, hash_forwarding_entry );
+	add_periodic_event_callback( AGING_INTERVAL, update_forwarding_db, forwarding_db );
+	set_packet_in_handler( handle_packet_in, forwarding_db );
+	set_switch_ready_handler( handle_switch_ready, &switches );
+	
+	
+
+	/* Main loop */
+	start_trema();
+
+	/* Finalize transaction manager */
+	finalize_restapi_manager();
+
+	return 0;
 }
 
 

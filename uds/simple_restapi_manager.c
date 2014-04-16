@@ -46,7 +46,8 @@ static int *mongoose_callback( struct mg_connection *conn )
   const struct mg_request_info *request_info = mg_get_request_info(conn); 
     char *ret_strings = "";
     char data[4096];
-    int n,retcode;
+    int n;
+	int retcode;
     memset(data,0,sizeof(data));
     n = mg_read(conn,data,sizeof(data));
     /* Iterate all the url_mapping data */
@@ -58,15 +59,16 @@ static int *mongoose_callback( struct mg_connection *conn )
     while ( ( e = iterate_hash_next( &iter ) ) != NULL ) {
       url_mapping *url_mapping_data = ( url_mapping * ) e->value;
       
-      /* Compare the string with regex */
+      //Compare the string with regex 
       reti = regexec( &url_mapping_data->regex, request_info->uri , 0, NULL, 0 );
       
       if( !reti ){ 
-        /* Match the URI */
+        // Match the URI 
         if( strcmp( request_info->request_method , 
                 url_mapping_data->method ) == 0 ) { 
-          /* Match the REST API */
-          ret_strings = ( *url_mapping_data->restapi_requested_callback )( request_info, &data,&retcode );
+          // Match the REST API //
+          ret_strings = ( *url_mapping_data->restapi_requested_callback )( request_info,&data,&retcode);
+		  break;
         }
         else {
           info( "REST API not found \n" );
@@ -74,6 +76,7 @@ static int *mongoose_callback( struct mg_connection *conn )
       }
     }
     
+
     /* Uncomment these and will see additional port number info from mongoose */
     //int ret_length = strlen( ret_strings );
     //char content[ ret_length + 1024 ];
@@ -81,6 +84,7 @@ static int *mongoose_callback( struct mg_connection *conn )
     //                              "Hello from mongoose! Remote port: %d, content:%s\n",
     //                              request_info->remote_port, ret_strings );
 	//
+	
     if(200 == retcode){
 	    mg_printf(conn,
     	          "HTTP/1.1 200 OK\r\n"
@@ -99,6 +103,8 @@ static int *mongoose_callback( struct mg_connection *conn )
     	          "%s",
         	      strlen(ret_strings), ret_strings);
 	}
+
+
     return 1;
 }
 
